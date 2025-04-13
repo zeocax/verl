@@ -187,7 +187,7 @@ def convert_config(hf_config: PretrainedConfig, megatron_config) -> TransformerC
         batch_p2p_comm=batch_p2p_comm,
         pipeline_dtype=dt,
         params_dtype=dt,
-        sequence_parallel=True,
+        sequence_parallel=mpu.get_tensor_model_parallel_world_size() > 1,
         variable_seq_lengths=True,
         masked_softmax_fusion=True,
         moe_token_dispatcher_type="alltoall",
@@ -291,9 +291,14 @@ def get_optimizer_checkpoint_path(checkpoint_path, use_distributed_optimizer=Tru
     return os.path.join(checkpoint_path, f"optim", f"distrib_optim_pp{pp_rank}_tp{tp_rank}_cp{cp_rank}_dp{dp_rank}.pt")
 
 
-def get_rng_states_checkpoint_path(checkpoint_path, data_parallel_random_init=False):
+def get_rng_states_checkpoint_path(checkpoint_path, only_rank0_save=True):
+    # save rng states cause interrupts
     os.makedirs(os.path.join(checkpoint_path, "rng_states"), exist_ok=True)
-    if not data_parallel_random_init:
+    if only_rank0_save:
         return os.path.join(checkpoint_path, f'rng_states', "rng_states.pt")
     dp_rank = mpu.get_data_parallel_rank()
-    return os.path.join(checkpoint_path, f'rng_states', f"rng_states_{dp_rank}.pt")
+    pp_rank = mpu.get_pipeline_model_parallel_rank()
+    tp_rank = mpu.get_tensor_model_parallel_rank()
+    cp_rank = mpu.get_context_parallel_rank()
+    return os.path.join(checkpoint_path, f'rng_states',
+                        f"rng_states_pp{pp_rank}_tp{tp_rank}_cp{cp_rank}_dp{dp_rank}.pt")
