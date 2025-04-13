@@ -15,6 +15,7 @@
 Note that we don't combine the main with ray_trainer as ray_trainer is used by other main.
 """
 from verl.trainer.ppo.ray_trainer import RayPPOTrainer
+from verl.workers.reward_manager import AutoRewardManager
 
 import os
 import ray
@@ -150,22 +151,8 @@ class TaskRunner:
             role_worker_mapping[Role.RefPolicy] = ray.remote(ActorRolloutRefWorker)
             mapping[Role.RefPolicy] = global_pool_id
 
-        reward_manager_name = config.reward_model.get("reward_manager", "naive")
-        if reward_manager_name == 'naive':
-            from verl.workers.reward_manager import NaiveRewardManager
-            reward_manager_cls = NaiveRewardManager
-        elif reward_manager_name == 'prime':
-            from verl.workers.reward_manager import PrimeRewardManager
-            reward_manager_cls = PrimeRewardManager
-        elif reward_manager_name == 'batch':
-            from verl.workers.reward_manager import BatchRewardManager
-            reward_manager_cls = BatchRewardManager
-        elif reward_manager_name == 'dapo':
-            from verl.workers.reward_manager import DAPORewardManager
-            reward_manager_cls = DAPORewardManager
-        else:
-
-            raise NotImplementedError
+        reward_manager_name_or_path = config.reward_model.get("reward_manager", "naive")
+        reward_manager_cls = AutoRewardManager.from_name_or_path(reward_manager_name_or_path)
 
         compute_score = get_custom_reward_fn(config)
         reward_kwargs = dict(config.reward_model.get("reward_kwargs", {}))
