@@ -28,6 +28,7 @@
 """
 Note that we don't combine the main with ray_trainer as ray_trainer is used by other main.
 """
+from verl.workers.reward_manager import AutoRewardManager
 from .prime_ray_trainer import RayPRIMETrainer
 
 import ray
@@ -109,12 +110,8 @@ def main_task(config, compute_score=None):
         mapping[Role.RewardModel] = global_pool_id
 
     reward_manager_name = config.reward_model.get("reward_manager", "naive")
-    if reward_manager_name == 'naive':
-        from verl.workers.reward_manager import NaiveRewardManager
-        reward_manager_cls = NaiveRewardManager
-    elif reward_manager_name == 'prime':
-        from verl.workers.reward_manager import PrimeRewardManager
-        reward_manager_cls = PrimeRewardManager
+    if reward_manager_name == 'naive' or reward_manager_name == 'prime':
+        reward_manager_cls = AutoRewardManager.from_name_or_path(reward_manager_name)
     else:
         raise NotImplementedError
     reward_fn = reward_manager_cls(tokenizer=tokenizer, num_examine=0, compute_score=compute_score)
