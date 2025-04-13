@@ -1,8 +1,8 @@
 REWARD_MANAGER_MAPPING = {
-    "naive": "NaiveRewardManager",
-    "prime": "PrimeRewardManager",
-    "batch": "BatchRewardManager",
-    "dapo": "DAPORewardManager",
+    "naive": ("naive", "NaiveRewardManager"),
+    "prime": ("prime", "PrimeRewardManager"),
+    "batch": ("batch", "BatchRewardManager"),
+    "dapo": ("dapo", "DAPORewardManager"),
 }
 
 import os
@@ -23,23 +23,19 @@ class AutoRewardManager:
         """
         if reward_manager_name_or_path in REWARD_MANAGER_MAPPING:
             # maybe we can lazy import the module here like transformers
-            reward_manager_name = REWARD_MANAGER_MAPPING[reward_manager_name_or_path]
-            if reward_manager_name == "BatchRewardManager":
-                from .batch import BatchRewardManager
-                return BatchRewardManager
-            elif reward_manager_name == "NaiveRewardManager":
-                from .naive import NaiveRewardManager
-                return NaiveRewardManager
-            elif reward_manager_name == "PrimeRewardManager":
-                from .prime import PrimeRewardManager
-                return PrimeRewardManager
-            elif reward_manager_name == "DAPORewardManager":
-                from .dapo import DAPORewardManager
-                return DAPORewardManager
+            module_name, class_name = REWARD_MANAGER_MAPPING[reward_manager_name_or_path]
+            module = importlib.import_module(f".{module_name}", package="verl.workers.reward_manager")
+            return getattr(module, class_name)
         elif os.path.exists(reward_manager_name_or_path):
-            spec = importlib.util.spec_from_file_location("RewardManager", reward_manager_name_or_path)
+            # We assume the custom reward manager is defined as a class named "RewardManager" in the file,
+            # any idea about this?
+            # Test custom reward manager: "/root/verl/custom_reward_manager.py"
+            # Wait to write a test case for this
+            module_name = os.path.basename(reward_manager_name_or_path).replace(".py", "")
+            spec = importlib.util.spec_from_file_location(module_name, reward_manager_name_or_path)
             module = importlib.util.module_from_spec(spec)
-            return module
+            spec.loader.exec_module(module)
+            return getattr(module, "RewardManager")
         else:
             raise ValueError(
                 f"Invalid reward manager name or path: {reward_manager_name_or_path}"
