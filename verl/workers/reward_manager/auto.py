@@ -7,7 +7,7 @@ REWARD_MANAGER_MAPPING = {
 
 import os
 import importlib
-
+from verl.utils.import_utils import load_extern_type
 
 class AutoRewardManager:
 
@@ -28,14 +28,10 @@ class AutoRewardManager:
             return getattr(module, class_name)
         elif os.path.exists(reward_manager_name_or_path):
             # We assume the custom reward manager is defined as a class named "RewardManager" in the file,
-            # any idea about this?
+            # Add an arg to specify the class name?
             # Test custom reward manager: "/root/verl/custom_reward_manager.py"
             # Wait to write a test case for this
-            module_name = os.path.basename(reward_manager_name_or_path).replace(".py", "")
-            spec = importlib.util.spec_from_file_location(module_name, reward_manager_name_or_path)
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-            return getattr(module, "RewardManager")
+            return load_extern_type(reward_manager_name_or_path, "RewardManager")
         else:
             raise ValueError(
                 f"Invalid reward manager name or path: {reward_manager_name_or_path}"
