@@ -173,8 +173,9 @@ reward_model:
   ulysses_sequence_parallel_size: 1 # sp size
   use_dynamic_bsz: ${critic.use_dynamic_bsz}
   forward_max_token_len_per_gpu: ${critic.forward_max_token_len_per_gpu}
+  # We can pass the reward_manager a name string using override, or a dict of custom_cls as defined here.
+  # The default reward manager is 'naive' when no override name and no custom_cls is provided.
   reward_manager:
-    name: naive
     custom_cls:
       path: null
       name: null
