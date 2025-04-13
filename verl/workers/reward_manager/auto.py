@@ -7,12 +7,13 @@ REWARD_MANAGER_MAPPING = {
 
 import os
 import importlib
+
+
 class AutoRewardManager:
+
     def __init__(self):
-        raise TypeError(
-            "AutoRewardManager is designed to be instantiated "
-            "using the `AutoRewardManager.from_name_or_path(reward_manager_name_or_path)` method."
-        )
+        raise TypeError("AutoRewardManager is designed to be instantiated "
+                        "using the `AutoRewardManager.from_name_or_path(reward_manager_name_or_path)` method.")
 
     @classmethod
     def from_name_or_path(cls, reward_manager_name_or_path: str):
@@ -40,6 +41,7 @@ class AutoRewardManager:
             module = importlib.util.module_from_spec(spec)
             return module
         else:
-            raise ValueError(f"Invalid reward manager name or path: {reward_manager_name_or_path}"
-                             f"We have implemented the following reward managers: {REWARD_MANAGER_MAPPING.keys()}"
-                             f"If you want to use a custom reward manager, please reference to the documentation for more details.")
+            raise ValueError(
+                f"Invalid reward manager name or path: {reward_manager_name_or_path}"
+                f"We have implemented the following reward managers: {REWARD_MANAGER_MAPPING.keys()}"
+                f"If you want to use a custom reward manager, please reference to the documentation for more details.")
