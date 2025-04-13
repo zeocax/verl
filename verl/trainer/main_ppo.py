@@ -150,9 +150,9 @@ class TaskRunner:
         if config.algorithm.use_kl_in_reward or config.actor_rollout_ref.actor.use_kl_loss:
             role_worker_mapping[Role.RefPolicy] = ray.remote(ActorRolloutRefWorker)
             mapping[Role.RefPolicy] = global_pool_id
-
-        reward_manager_name_or_path = config.reward_model.get("reward_manager", "naive")
-        reward_manager_cls = AutoRewardManager.from_name_or_path(reward_manager_name_or_path)
+        
+        reward_manager_name_or_custom_cls = config.reward_model.get("reward_manager")
+        reward_manager_cls = AutoRewardManager.from_name_or_custom_cls(reward_manager_name_or_custom_cls)
 
         compute_score = get_custom_reward_fn(config)
         reward_kwargs = dict(config.reward_model.get("reward_kwargs", {}))
