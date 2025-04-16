@@ -32,6 +32,11 @@ import torch.distributed
 from tensordict import TensorDict
 from torch import nn
 
+import time
+import requests
+from functools import wraps
+from typing import Union
+
 from verl import DataProto
 from verl.utils.torch_functional import get_response_mask, pad_sequence_to_length
 from verl.workers.rollout.base import BaseRollout
@@ -245,6 +250,266 @@ class vLLMRollout(BaseRollout):
                 'position_ids': position_ids
             },
             batch_size=batch_size)
+
+        # free vllm cache engine
+        if self.config.free_cache_engine:
+            self.inference_engine.free_cache_engine()
+
+        return DataProto(batch=batch)
+
+def retry(max: int=10, sleep: int=1):
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            for i in range(max):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    if i == max - 1:
+                        print(f"Retry {func.__name__} failed after {max} times")
+                    elif sleep:
+                        time.sleep(sleep)
+        return wrapper
+    return decorator
+
+class vLLMRolloutWithSearch(vLLMRollout):
+    def __init__(self, actor_module: nn.Module, config: DictConfig, tokenizer, model_hf_config, **kwargs):
+        super().__init__(actor_module, config, tokenizer, model_hf_config, **kwargs)
+        self.tokenizer = tokenizer
+
+    @retry(max=5, sleep=1)
+    def batch_search(self, query: Union[str, List[str]], top_n=5) -> List[str]:
+        if len(query) == 0:
+            return 'invalid query'
+
+        url = f'{self.config.search_url}/batch_search'
+        if isinstance(query, str):
+            query = [query]
+        data = {'query': query, 'top_n': top_n}
+        response = requests.post(url, json=data)
+        
+        result_list = []
+        for item in response.json():
+            curr_result = ''
+            for line in item:
+                curr_result += f"{line['contents']}\n\n"
+            result_list.append(curr_result.strip())
+        
+        return result_list
+
+    @retry(max=5, sleep=1)
+    def search(self, query: str):
+        if query == '':
+            return 'invalid query'
+
+        url = f'{self.config.search_url}/search'
+        data = {'query': query, 'top_n': 5}
+        response = requests.post(url, json=data)
+        retrieval_text = ''
+        for line in response.json():
+            retrieval_text += f"{line['contents']}\n\n"
+        retrieval_text = retrieval_text.strip()
+        return retrieval_text
+
+    def extract_search_content(self, text: str) -> str:
+        try:
+            start_tag = '<search>'
+            end_tag = '</search>'
+            end_pos = text.rindex(end_tag)
+            start_pos = text.rindex(start_tag, 0, end_pos)
+            return text[start_pos + len(start_tag):end_pos].strip()
+        except ValueError:
+            return ""
+
+    @torch.no_grad()
+    def generate_sequences(self, prompts: DataProto, **kwargs) -> DataProto:
+        # rebuild vllm cache engine
+        if self.config.free_cache_engine:
+            self.inference_engine.init_cache_engine()
+
+        ori_input_ids = prompts.batch['input_ids']  # (bs, prompt_length)
+
+        # left-padded attention_mask
+        attention_mask = prompts.batch['attention_mask']
+        position_ids = prompts.batch['position_ids']
+
+        # used to construct attention_mask
+        eos_token_id = prompts.meta_info['eos_token_id']
+
+        batch_size = ori_input_ids.size(0)
+
+        idx_list = []
+        # parse idx from torch.Tensor to List[List[str]]
+        for i in range(batch_size):
+            idx_list.append(_pre_process_inputs(self.pad_token_id, ori_input_ids[i]))
+
+        do_sample = prompts.meta_info.get('do_sample', True)
+        if not do_sample:
+            kwargs = {
+                'best_of': 1,
+                'top_p': 1.0,
+                'top_k': -1,
+                'min_p': 0.0,
+                'temperature': 0,
+                'n': 1  # if greedy, only 1 response
+            }
+
+        with self.update_sampling_params(**kwargs):
+            # prepare n copies for each input
+            curr_inputs = []
+            for input_ids in idx_list:
+                for _ in range(self.sampling_params.n):
+                    curr_inputs.append(input_ids.copy())
+            init_inputs = [ids.copy() for ids in curr_inputs]
+            
+            # track the status of each input
+            curr_max_tokens = [self.sampling_params.max_tokens] * len(curr_inputs)
+            active_indices = list(range(len(curr_inputs)))
+
+            # collect the result mask of each rollout
+            result_mask_list = [[] for _ in range(len(curr_inputs))]
+
+            # generate until all inputs are finished
+            while active_indices:
+                # only process the active inputs
+                active_inputs = [curr_inputs[i] for i in active_indices]
+                active_max_tokens = [curr_max_tokens[i] for i in active_indices]
+
+                # generate in batch, according to active max tokens
+                with self.update_sampling_params(n=1, stop=['</search>'], max_tokens=max(active_max_tokens), detokenize=True):
+                    outputs = self.inference_engine.generate(
+                        prompts=None,
+                        sampling_params=self.sampling_params,
+                        prompt_token_ids=active_inputs,
+                        use_tqdm=False
+                    )
+                
+                # collect the queries to search
+                search_queries = []
+                search_indices = []
+
+                # process each output
+                new_active_indices = []
+                for i, idx in enumerate(active_indices):
+                    output_ids = outputs[0][i].tolist()
+                    if self.tokenizer.eos_token_id in output_ids:
+                        first_eos_idx = output_ids.index(self.tokenizer.eos_token_id)
+                    else:
+                        first_eos_idx = len(output_ids)
+                    
+                    if self.tokenizer.pad_token_id in output_ids:
+                        first_pad_idx = output_ids.index(self.tokenizer.pad_token_id)
+                    else:
+                        first_pad_idx = len(output_ids)
+                    
+                    finish_reason = outputs[2][i]
+                    stop_reason = outputs[3][i]
+
+                    if finish_reason == 'stop' and isinstance(stop_reason, str) and '</search>' in stop_reason:
+                        # need to search
+                        ## truncate from the first pad token
+                        output_ids = output_ids[:first_pad_idx]
+                        output_str = self.tokenizer.decode(output_ids)
+                        ## process the search
+                        search_content = self.extract_search_content(output_str)
+                        search_queries.append(search_content)
+                        search_indices.append(idx)
+                        new_active_indices.append(idx)
+                        ## update the current input
+                        curr_inputs[idx] += output_ids
+                        result_mask_list[idx] += [1] * len(output_ids)
+                    elif finish_reason == 'stop' and stop_reason == None:
+                        # output eos, indicating finished; truncate from the first eos token
+                        output_ids = output_ids[:first_eos_idx+1]
+                        curr_inputs[idx] += output_ids
+                        result_mask_list[idx] += [1] * len(output_ids)
+                    elif finish_reason == 'stop' and stop_reason == self.tokenizer.pad_token_id:
+                        # for instruction model, there is a chance that the end is endoftext, not im_end, this case needs special handling
+                        output_ids = output_ids[:first_pad_idx+1]
+                        curr_inputs[idx] += output_ids
+                        result_mask_list[idx] += [1] * len(output_ids)
+                    elif finish_reason == 'length':
+                        # output is too long
+                        curr_inputs[idx] += output_ids
+                        result_mask_list[idx] += [1] * len(output_ids)
+                        
+                # batch process the search requests
+                if search_queries:
+                    search_results = self.batch_search(search_queries)
+                    for idx, result in zip(search_indices, search_results):
+                        # update the output, add the search result
+                        output_ids = self.tokenizer.encode(f" <result>\n{result}\n</result>")
+                        curr_inputs[idx] += output_ids
+                        result_mask_list[idx] += [0] * len(output_ids)
+
+                # check if need to truncate for active indices
+                length_checked_active_indices = []
+                for idx in active_indices:
+                    assert len(curr_inputs[idx]) - len(init_inputs[idx]) == len(result_mask_list[idx]), f"curr_inputs: {len(curr_inputs[idx])}, init_inputs: {len(init_inputs[idx])}, result_mask_list: {len(result_mask_list[idx])}"
+                    if len(curr_inputs[idx]) - len(init_inputs[idx]) >= self.config.response_length:
+                        curr_inputs[idx] = init_inputs[idx] \
+                            + curr_inputs[idx][len(init_inputs[idx]):len(init_inputs[idx])+self.config.response_length]
+                        result_mask_list[idx] = result_mask_list[idx][:self.config.response_length]
+                    else:
+                        curr_max_tokens[idx] = self.config.response_length - len(curr_inputs[idx]) + len(init_inputs[idx])
+                        if idx in new_active_indices:
+                            length_checked_active_indices.append(idx)
+                active_indices = length_checked_active_indices
+
+            output_ids_list = []
+            # collect the results
+            for i, input_ids in enumerate(idx_list):
+                for j in range(self.sampling_params.n):
+                    idx = i * self.sampling_params.n + j
+                    input_len = len(input_ids)
+                    output_ids_list.append(curr_inputs[idx][input_len:])
+
+        response_list = []
+        result_mask_list_padded = []
+        for output_ids, result_mask in zip(output_ids_list, result_mask_list):
+            assert len(output_ids) == len(result_mask), f"output_ids: {len(output_ids)}, result_mask: {len(result_mask)}"
+            response = torch.tensor(output_ids, device=ori_input_ids.device)
+            response = pad_sequence_to_length(response, self.config.response_length, self.pad_token_id)
+            result_mask = torch.tensor(result_mask, device=ori_input_ids.device)
+            result_mask = pad_sequence_to_length(result_mask, self.config.response_length, 0)
+            response_list.append(response)
+            result_mask_list_padded.append(result_mask)
+        response = torch.stack(response_list, dim=0)
+        result_mask = torch.stack(result_mask_list_padded, dim=0)
+
+        if self.config.n > 1 and do_sample:
+            ori_input_ids = ori_input_ids.repeat_interleave(self.config.n, dim=0)
+            attention_mask = attention_mask.repeat_interleave(self.config.n, dim=0)
+            position_ids = position_ids.repeat_interleave(self.config.n, dim=0)
+            batch_size = batch_size * self.config.n
+        seq = torch.cat([ori_input_ids, response], dim=-1)
+
+        response_length = response.size(1)
+        delta_position_id = torch.arange(1, response_length + 1, device=position_ids.device)
+        delta_position_id = delta_position_id.unsqueeze(0).repeat(batch_size, 1)
+
+        # TODO(sgm): fix position_ids on right_pad
+        # prompt: left pad + response: right pad
+        # attention_mask: [0,0,0,0,1,1,1,1, | 1,1,1,0,0,0,0,0]
+        # position_ids:   [0,0,0,0,0,1,2,3, | 4,5,6,7,8,9,10,11]
+        response_position_ids = position_ids[:, -1:] + delta_position_id
+        position_ids = torch.cat([position_ids, response_position_ids], dim=-1)
+                
+        response_attention_mask = get_eos_mask(response_id=response, eos_token=eos_token_id, dtype=attention_mask.dtype)
+        attention_mask = torch.cat((attention_mask, response_attention_mask), dim=-1)
+
+        # result mask: result part is 0, other part is 1
+        loss_mask = result_mask * response_attention_mask
+        
+        # all the tp ranks should contain the same data here. data in all ranks are valid
+        batch = TensorDict({
+            'prompts': ori_input_ids,
+            'responses': response,
+            'input_ids': seq,  # here input_ids become the whole sentences
+            'attention_mask': attention_mask,
+            'loss_mask': loss_mask,
+            'position_ids': position_ids
+        }, batch_size=batch_size)
 
         # free vllm cache engine
         if self.config.free_cache_engine:

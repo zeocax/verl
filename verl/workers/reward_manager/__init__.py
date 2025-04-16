@@ -16,3 +16,5 @@ from .naive import NaiveRewardManager
 from .prime import PrimeRewardManager
 from .batch import BatchRewardManager
 from .dapo import DAPORewardManager
+
+from .re_search import ReSearchRewardManagerWithSave

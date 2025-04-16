@@ -315,18 +315,25 @@ class ActorRolloutRefWorker(Worker):
             rollout_sharding_manager = BaseShardingManager()
             # TODO: a sharding manager that do nothing?
 
-        elif rollout_name == 'vllm':
-            from verl.workers.rollout.vllm_rollout import vLLMRollout, vllm_mode
+        elif 'vllm' in rollout_name:
+            if self.config.rollout.name == 'vllm':
+                from verl.workers.rollout.vllm_rollout import vLLMRollout, vllm_mode
+                rollout_class = vLLMRollout
+            elif self.config.rollout.name == 'vllm_with_search':
+                from verl.workers.rollout.vllm_rollout import vLLMRolloutWithSearch, vllm_mode
+                rollout_class = vLLMRolloutWithSearch
+            else:
+                raise NotImplementedError(f"rollout_name: {self.config.rollout.name} is not supported")
             from verl.workers.sharding_manager import FSDPVLLMShardingManager
             log_gpu_memory_usage(f'Before building {rollout_name} rollout', logger=None)
             local_path = copy_to_local(self.config.model.path)
             if vllm_mode == 'customized':
-                rollout = vLLMRollout(actor_module=self.actor_module_fsdp,
+                rollout = rollout_class(actor_module=self.actor_module_fsdp,
                                       config=self.config.rollout,
                                       tokenizer=self.tokenizer,
                                       model_hf_config=self.actor_model_config)
             elif vllm_mode == 'spmd':
-                rollout = vLLMRollout(model_path=local_path,
+                rollout = rollout_class(model_path=local_path,
                                       config=self.config.rollout,
                                       tokenizer=self.tokenizer,
                                       model_hf_config=self.actor_model_config,

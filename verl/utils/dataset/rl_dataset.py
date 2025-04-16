@@ -27,6 +27,7 @@ from omegaconf import ListConfig, DictConfig
 from verl.utils.model import compute_position_id_with_mask
 import verl.utils.torch_functional as verl_F
 
+from verl.utils.dataset.template import prompt_template_dict
 
 def collate_fn(data_list: list[dict]) -> dict:
     tensors = defaultdict(list)
@@ -82,6 +83,8 @@ class RLHFDataset(Dataset):
         data_files: Union[str, List[str]],
         tokenizer: PreTrainedTokenizer,
         config: DictConfig,
+        apply_chat=True,
+        prompt_template_name=None,
         processor: Optional[ProcessorMixin] = None,
     ):
         if not isinstance(data_files, (List, ListConfig)):
@@ -97,6 +100,14 @@ class RLHFDataset(Dataset):
         self.prompt_key = config.get("prompt_key", "prompt")
         self.image_key = config.get("image_key", "images")
         self.max_prompt_length = config.get("max_prompt_length", 1024)
+
+        self.apply_chat = apply_chat
+        self.prompt_template_name = prompt_template_name
+        self.prompt_template = prompt_template_dict[prompt_template_name]
+        if not self.apply_chat:
+            assert self.prompt_key == 'question', 'when not apply_chat, must use question as the prompt_key'
+            assert self.prompt_template is not None, 'when not apply_chat, prompt_template_name must not be None'
+
 
         self.return_raw_chat = config.get('return_raw_chat', False)
         self.truncation = config.get('truncation', 'error')
@@ -131,11 +142,17 @@ class RLHFDataset(Dataset):
         if self.filter_overlong_prompts:
             tokenizer = self.tokenizer
             prompt_key = self.prompt_key
-            self.dataframe = self.dataframe.filter(
-                lambda doc: len(tokenizer.apply_chat_template(doc[prompt_key], add_generation_prompt=True)
-                               ) <= self.max_prompt_length,
-                num_proc=self.num_workers,
-                desc=f"Filtering prompts longer than {self.max_prompt_length} tokens")
+            prompt_template = self.prompt_template
+            if self.apply_chat:
+                self.dataframe = self.dataframe[self.dataframe.apply(lambda doc: len(
+                    tokenizer.apply_chat_template([
+                            {'role': 'system', 'content': prompt_template}, 
+                            {'role': 'user', 'content': doc[prompt_key]}
+                        ], add_generation_prompt=True)) <= self.max_prompt_length, axis=1)]
+            else:
+                self.dataframe = self.dataframe[self.dataframe.apply(lambda doc: len(
+                    tokenizer.encode(prompt_template.format(prompt=doc[prompt_key]), add_special_tokens=False)) <= self.max_prompt_length,
+                                                            axis=1)]
 
             print(f'filter dataset len: {len(self.dataframe)}')
 
@@ -159,7 +176,12 @@ class RLHFDataset(Dataset):
 
         chat = row_dict.pop(self.prompt_key)
 
-        prompt_with_chat_template = self.tokenizer.apply_chat_template(chat, add_generation_prompt=True, tokenize=False)
+        if self.apply_chat:
+            chat = [{'role': 'system', 'content': self.prompt_template}, 
+                    {'role': 'user', 'content': chat}]
+            prompt_with_chat_template = self.tokenizer.apply_chat_template(chat, add_generation_prompt=True, tokenize=False)
+        else:
+            prompt_with_chat_template = self.prompt_template.format(prompt=chat)  # the only question string
 
         is_multi_modal = self.image_key in row_dict
         if is_multi_modal:  # expand image token
@@ -217,6 +239,10 @@ class RLHFDataset(Dataset):
         # add index for each prompt
         index = row_dict.get("extra_info", {}).get("index", 0)
         row_dict["index"] = index
+
+        # handle ground truth is list 
+        if isinstance(row_dict['reward_model']['ground_truth'], np.ndarray):
+            row_dict['reward_model']['ground_truth'] = row_dict['reward_model']['ground_truth'].tolist()
 
         return row_dict
 

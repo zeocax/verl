@@ -423,6 +423,8 @@ class RayPPOTrainer(object):
             tokenizer=self.tokenizer,
             processor=self.processor,
             config=self.config.data,
+            apply_chat=self.config.data.apply_chat,
+            prompt_template_name=self.config.data.prompt_template_name
         )
 
         # use sampler for better ckpt resume
@@ -446,6 +448,8 @@ class RayPPOTrainer(object):
             tokenizer=self.tokenizer,
             processor=self.processor,
             config=self.config.data,
+            apply_chat=self.config.data.apply_chat,
+            prompt_template_name=self.config.data.prompt_template_name
         )
         self.val_dataloader = StatefulDataLoader(
             dataset=self.val_dataset,
@@ -564,7 +568,15 @@ class RayPPOTrainer(object):
             test_batch = test_batch.union(test_output_gen_batch)
 
             # evaluate using reward_function
-            result = self.val_reward_fn(test_batch, return_dict=True)
+
+            try:
+                result = self.val_reward_fn(test_batch, os.path.join(self.config.trainer.rollout_save_path, f'val_{self.global_steps}.jsonl'), return_dict=True)
+            except Exception as e:
+                print(f'Error in reward_fn: {e}')
+                result = {}
+                result["reward_tensor"] = self.val_reward_fn(test_batch, os.path.join(self.config.trainer.rollout_save_path, f'val_{self.global_steps}.jsonl'))
+                result["reward_extra_info"] = {}
+
             reward_tensor = result["reward_tensor"]
             scores = reward_tensor.sum(-1).cpu().tolist()
             sample_scores.extend(scores)
@@ -917,7 +929,7 @@ class RayPPOTrainer(object):
                             reward_extra_infos_dict = reward_result['reward_extra_info']
                         except Exception as e:
                             print(f'Error in reward_fn: {e}')
-                            reward_tensor = self.reward_fn(batch)
+                            reward_tensor = self.reward_fn(batch, os.path.join(self.config.trainer.rollout_save_path, f'train_{self.global_steps}.jsonl'))
                             reward_extra_infos_dict = {}
 
                         batch.batch['token_level_scores'] = reward_tensor
