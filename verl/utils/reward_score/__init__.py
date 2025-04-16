@@ -50,9 +50,9 @@ def _default_compute_score(data_source, tokenizer, solution_str, ground_truth, e
         raise NotImplementedError(f"Reward function is not implemented for {data_source=}")
     
     return res
-    if isinstance(res, dict):
-        return res
-    elif isinstance(res, (int, float, bool)):
-        return float(res)
-    else:
-        return float(res[0])
+    # if isinstance(res, dict):
+    #     return res
+    # elif isinstance(res, (int, float, bool)):
+    #     return float(res)
+    # else:
+    #     return float(res[0])
