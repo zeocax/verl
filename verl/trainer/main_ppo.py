@@ -166,7 +166,9 @@ class TaskRunner:
         val_reward_fn = reward_manager_cls(tokenizer=tokenizer,
                                            num_examine=1,
                                            compute_score=compute_score,
-                                           reward_fn_key=config.data.reward_fn_key)
+                                           reward_fn_key=config.data.reward_fn_key,
+                                           **reward_kwargs)
+        
         resource_pool_manager = ResourcePoolManager(resource_pool_spec=resource_pool_spec, mapping=mapping)
 
         trainer = RayPPOTrainer(config=config,
