@@ -21,13 +21,13 @@ class ReSearchRewardManagerWithSave():
     """The reward manager.
     """
 
-    def __init__(self, tokenizer, num_examine, compute_score=None, save_path=None) -> None:
+    def __init__(self, tokenizer, num_examine, compute_score=None, reward_fn_key='data_source', save_path=None) -> None:
         self.tokenizer = tokenizer
         self.num_examine = num_examine  # the number of batches of decoded responses to print to the console
         self.compute_score = compute_score or _default_compute_score
         self.save_path = save_path
 
-    def __call__(self, data: DataProto, curr_save_path=None):
+    def __call__(self, data: DataProto, return_dict: bool=False, curr_save_path=None):
         """We will expand this function gradually based on the available datasets"""
 
         if curr_save_path is not None:

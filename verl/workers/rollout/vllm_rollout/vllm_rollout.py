@@ -100,7 +100,7 @@ class vLLMRollout(BaseRollout):
         max_model_len = int(max_model_len)
 
         if max_num_batched_tokens < max_model_len and self.config.enable_chunked_prefill:
-            raise ValueError('Enable chunked prefill, max_num_batched_tokens is smaller than max_model_len, \
+            raise ValueError(f'Enable chunked prefill, max_num_batched_tokens {max_num_batched_tokens} is smaller than max_model_len {max_model_len}, \
                              please increase max_num_batched_tokens or disable chunked prefill')
 
         self.inference_engine = LLM(
@@ -495,7 +495,7 @@ class vLLMRolloutWithSearch(vLLMRollout):
         response_position_ids = position_ids[:, -1:] + delta_position_id
         position_ids = torch.cat([position_ids, response_position_ids], dim=-1)
                 
-        response_attention_mask = get_eos_mask(response_id=response, eos_token=eos_token_id, dtype=attention_mask.dtype)
+        response_attention_mask = get_response_mask(response_id=response, eos_token=eos_token_id, dtype=attention_mask.dtype)
         attention_mask = torch.cat((attention_mask, response_attention_mask), dim=-1)
 
         # result mask: result part is 0, other part is 1
